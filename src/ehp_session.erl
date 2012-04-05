@@ -18,9 +18,13 @@ on_request(S)->
     try
         inet:setopts(S#state.sock, [{active, once},{packet,http_bin}]),
         header_loop(S#state{data=[], n=S#state.n+1})
-    catch _:Error ->
-        send_response(S#state.sock, 
-            io_lib:format("<h1>Error: ~p</h1><pre>\n~p</pre>\n", [Error, erlang:get_stacktrace()]), 500)
+    catch Type:Error ->
+        {ok, Code, Body} = try
+            {ok, C, B} = apply(S#state.callback, handle_error, [Type, Error])
+        catch _:_->
+            {ok, 500, io_lib:format("<h1>Error: ~p</h1><pre>\n~p</pre>\n", [Error, erlang:get_stacktrace()])}
+        end,
+        send_response(S#state.sock, Body, Code)
     end.
 
 header_loop(#state{sock = Sock, callback=Callback} = S)->
@@ -75,7 +79,6 @@ be_list(A) when is_list(A) -> A.
 
 send_response(Sock, Body, Code)->
     BodyStr = lists:flatten(Body),
-    io:format("a: ~s\n",[BodyStr]),
     gen_tcp:send(Sock, ["HTTP/1.1 ", integer_to_list(Code),
              "\r\nContent-Type: text/html",
              "\r\nCache-Control: no-cache",
