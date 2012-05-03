@@ -1,6 +1,7 @@
 -module(ehp_server).
 -behaviour(gen_server).
 -define(SERVER, ?MODULE).
+-define(CONNECT_TIMEOUT, 10*1000).
 
 %% ------------------------------------------------------------------
 %% API Function Exports
@@ -14,7 +15,7 @@
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
--export([connect/1, finish/3]).
+-export([connect/2, finish/3]).
 -record(state,{}).
 
 %% ------------------------------------------------------------------
@@ -70,7 +71,7 @@ handle_cast({connect_result, Upstream, {ok, Sock}}, S) ->
 handle_cast({connect_result, Upstream, {error, Why}}, S) ->
     case ets:lookup(ehp_pool_req, Upstream) of
         [{Upstream, Req} | _] ->
-            Req ! {connect_error, Why},
+            Req ! {upstream_error, Why},
             ets:delete_object(ehp_pool_req, {Upstream, Req});
         [] -> ok
     end,
@@ -102,19 +103,36 @@ code_change(_OldVsn, S, _Extra) ->
 %% Internal Function Definitions
 %% ------------------------------------------------------------------
 
-connect(Upstream)->
+connect({Host, Addr}, Callback)-> do_connect({Host, Addr}, Callback);
+connect(Hostlist, Callback) when is_list(Hostlist)->
+    L2 = [{R*random:uniform(), H} || {R, H} <- Hostlist],
+    L3 = lists:keysort(1, L2),
+    try_connect([E || {_, E} <- L3], Callback, {error, noserver}).
+
+try_connect([], Callback, Reason)-> Reason;
+try_connect([{Host, Addr}|T], Callback, _)->
+    case do_connect({Host, Addr},Callback) of
+        {ok, Sock, Current} -> {ok, Sock, Current};
+        Reason -> try_connect(T, Callback, Reason)
+    end.
+
+do_connect({_Host, _Addr} = Upstream, Callback)->
     gen_server:cast(?MODULE, {request, self(), Upstream}),
     receive
-        {upstream, Sock} -> {ok, Sock};
-        {upstream_error, Why} -> {error, Why}
-    after 30*1000 -> {error, timeout}
+        {upstream, Sock} -> {ok, Sock, Upstream};
+        {upstream_error, Why} -> 
+            spawn(Callback, handle_healthy_cast,[Upstream, Why]),
+            {error, Why}
+    after ?CONNECT_TIMEOUT ->
+        spawn(Callback, handle_healthy_cast,[Upstream, timeout]),
+        {error, timeout}
     end.
-    
     
 finish(Type, Sock, Upstream)->
     Master = erlang:whereis(?MODULE),
     case Type of
         next ->
+            inet:setopts(Sock,[{active, once},{packet, http_bin}]),
             gen_tcp:controlling_process(Sock, Master);
         tcp_closed -> ok
     end,
@@ -135,7 +153,7 @@ next_request(Upstream, Sock)->
 spawn_connect({Addr, Port})->
     Master = self(),
     proc_lib:spawn(fun()->
-        Ret = case gen_tcp:connect(Addr, Port,[{active,once},{buffer, 10240}]) of
+        Ret = case gen_tcp:connect(Addr, Port,[{active,once},{packet,http_bin},{buffer, 10240}], ?CONNECT_TIMEOUT-1000) of
             {ok, Sock} -> gen_tcp:controlling_process(Sock, Master), {ok, Sock};
             Error -> Error
         end,

@@ -1,40 +1,11 @@
 -module(ehp_protocol).
--export([start/3,start/4]).
+-export([start/7]).
 -define(debug_router(),ok).
 -record(state, {upstream, request, response, option=[], chuncked=false, recv_remaining=0, rev,
         remaining, channel, req_stat, rst_stat, request_inet_opts, timeout=30*1000}).
--record(channel_state, {master, sock}).          
+-record(channel_state, {master, sock}).
 
 -define(multi_receive(F,Timeout), 
-
-    {http, RequestSock, {http_request, Method , Uri , {V1,V2} }} ->
-        case Uri of
-            {absoluteURI, Schema, Host, _, Path} ->
-                send_sock(ResponseSock, [be_list(Method), " ",be_list(Schema),"://",Host, Path, " HTTP/", be_list(V1),".",be_list(V2),"\r\n"]),
-                inet:setopts(RequestSock, [{active, once}]),
-                F(S);
-            {abs_path, Path} -> 
-                send_sock(ResponseSock, [be_list(Method), " ", Path, " HTTP/", be_list(V1),".",be_list(V2),"\r\n"]),
-                inet:setopts(RequestSock, [{active, once}]),
-                F(S);
-            BadUrl -> 
-                throw({bad_url, BadUrl})
-        end;
-        
-    {http, RequestSock , {http_header, _, 'Content-Length', _ , Val}} ->
-        send_sock(ResponseSock, ["Content-Length: ",Val,"\r\n"]),
-        inet:setopts(RequestSock, [{active, once}]),
-        F(S#state{recv_remaining = list_to_integer(Val)});
-        
-    {http, RequestSock , {http_header, _, Header, _ , Val}} ->
-        send_sock(ResponseSock, [be_list(Header),": ",Val,"\r\n"]),
-        inet:setopts(RequestSock, [{active, once}]),
-        F(S);
-        
-    {http, RequestSock , http_eoh} ->
-        gen_tcp:send(ResponseSock, "\r\n"),
-        inet:setopts(RequestSock, [{active, once}, {packet, 0}, binary]),
-        F(S);
 
     {tcp, RequestSock, Data} ->
         send_sock(ResponseSock, Data),
@@ -66,7 +37,7 @@ return(S, Type)->
             {proplists:get_value(recv_oct, A) - proplists:get_value(recv_oct, S#state.req_stat),
             proplists:get_value(send_oct, A) - proplists:get_value(send_oct, S#state.req_stat)};
         {error, _} ->
-            case inet:getstat(S#state.request, [recv_oct, send_oct]) of
+            case inet:getstat(S#state.response, [recv_oct, send_oct]) of
                 {ok, B} ->
                     {proplists:get_value(send_oct, B) - proplists:get_value(send_oct, S#state.rst_stat),
                     proplists:get_value(recv_oct, B) - proplists:get_value(recv_oct, S#state.rst_stat)};
@@ -76,24 +47,17 @@ return(S, Type)->
     {ok, Type, Report}.
 
 send_sock(Sock, Data)->
-    %io:format("~p ~s",[Sock, Data]),
     gen_tcp:send(Sock, Data).
-
-start(RequestSock, Upstream,Option)->
-    start(RequestSock, Upstream, [], Option).
     
-start(RequestSock, Upstream, Blocks, Option)->
+start(RequestSock, Callback, UpstreamList, Blocks, Req_remaining, ReqStat, Option)->
     
     {ok, RequestOpts} = inet:getopts(RequestSock, [active, packet]),
-    inet:setopts(RequestSock, [{packet, http}]),
-    gen_tcp:unrecv(RequestSock, Blocks),
-    inet:setopts(RequestSock,[{active, once}]),
-    {ok, ReqStat} = inet:getstat(RequestSock, [recv_oct, send_oct]),
+    inet:setopts(RequestSock,[{active, once},{packet,0}]),
     
-    {ok, ResponseSock} = ehp_server:connect(Upstream),
+    {ok, ResponseSock, Upstream} = ehp_server:connect(UpstreamList, Callback),
     
     try
-        inet:setopts(ResponseSock, [{active, once},{packet,http_bin}]),
+        gen_tcp:send(ResponseSock, Blocks),
 	    
         Timeout = case proplists:get_value(timeout, Option) of
             N when is_integer(N) and (N>1000) and (N < 181*1000)-> N;
@@ -110,6 +74,7 @@ start(RequestSock, Upstream, Blocks, Option)->
         loop(#state{request = RequestSock, response = ResponseSock, 
                 req_stat = ReqStat, rst_stat = RstStat,
                 timeout = Timeout, upstream = Upstream,
+                recv_remaining = Req_remaining,
                 option=Option, request_inet_opts = RequestOpts })
     catch _:Error->
         erlang:display(erlang:get_stacktrace()),
@@ -128,9 +93,19 @@ loop(#state{response=ResponseSock, request=RequestSock} = S)->
                 be_list(Code),$ ,Text,"\r\n"]),
                 
             inet:setopts(ResponseSock, [{active, once}]),
-            case V2 of
-                1 -> loop(S#state{remaining=0, rev="1.1"});
-                0 -> loop(S#state{remaining=unlimited,  rev="1.0"})
+            case Code of
+                100 ->
+                    receive
+                        {http, ResponseSock, http_eoh} ->
+                            gen_tcp:send(RequestSock, "\r\n"),
+                            inet:setopts(ResponseSock, [{active, once}]),
+                            loop(S)
+                    end;
+                _ ->
+                    case V2 of
+                        1 -> loop(S#state{remaining=0, rev="1.1"});
+                        0 -> loop(S#state{remaining=unlimited,  rev="1.0"})
+                    end
             end;
             
         {http,ResponseSock, {http_header,_,'Transfer-Encoding',_,Val}} ->
@@ -248,7 +223,7 @@ next(#state{response=ResponseSock} = S) ->
     return(S, next).
 
 flush(Sock, 0) -> ok;
-flush(Sock, Remaining) ->erlang:display({?LINE,Remaining}),
+flush(Sock, Remaining) ->erlang:display({?MODULE,?LINE,Remaining}),
     receive
         {tcp, Sock, D} ->
             flush(Sock, Remaining - erlang:byte_size(D)),
