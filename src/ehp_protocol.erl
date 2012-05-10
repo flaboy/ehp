@@ -13,13 +13,13 @@
         F(S#state{recv_remaining = S#state.recv_remaining - erlang:byte_size(Data)});
 
     {tcp_closed, ResponseSock} ->
-        S#state.channel ! {tcp_closed, ResponseSock},
+        ehp_server:finish(tcp_closed, ResponseSock, S#state.upstream),
         Ret = return(S, exit),
         gen_tcp:close(RequestSock),
         Ret;
 
     {tcp_closed, RequestSock} ->
-        S#state.channel ! {tcp_closed, ResponseSock},
+        ehp_server:finish(tcp_closed, ResponseSock, S#state.upstream),
         Ret = return(S, exit),
         gen_tcp:close(ResponseSock),
         Ret;
@@ -41,7 +41,7 @@ return(S, Type)->
                 {ok, B} ->
                     {proplists:get_value(send_oct, B) - proplists:get_value(send_oct, S#state.rst_stat),
                     proplists:get_value(recv_oct, B) - proplists:get_value(recv_oct, S#state.rst_stat)};
-                _ -> error
+                _ -> {ok, Type, {0,0}}
             end
     end,
     {ok, Type, Report}.
