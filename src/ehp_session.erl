@@ -38,15 +38,15 @@ header_loop(#state{sock = Sock, callback=Callback} = S)->
         {http, Sock, {http_request, Method , Uri , {V1,V2} }} ->
             case Uri of
                 {absoluteURI, Schema, Host, _, Path} ->
-                    {ok, C1} = Callback:init(Method, Path),
-                    Data = [be_list(Method), " ",atom_to_list(Schema),"://",Host, Path, " HTTP/", be_list(V1),".",be_list(V2),"\r\n"],
+                    {ok, Path2, C1} = Callback:init(Method, Path),
+                    Data = [be_list(Method), " ",atom_to_list(Schema),"://",Host, Path2, " HTTP/", be_list(V1),".",be_list(V2),"\r\n"],
                     {ok, C2} = Callback:handle_header('Host', Host, C1),
                     S2 = S#state{bin = [Data], method=Method, timeout=?REQUEST_TIMEOUT, c=C2},
                     inet:setopts(Sock, [{active, once}]),
                     header_loop(S2);
                 {abs_path, Path} -> 
-                    {ok, C1} = Callback:init(Method, Path),
-                    Data = [be_list(Method), " ", Path, " HTTP/", be_list(V1),".",be_list(V2),"\r\n"],
+                    {ok, Path2, C1} = Callback:init(Method, Path),
+                    Data = [be_list(Method), " ", Path2, " HTTP/", be_list(V1),".",be_list(V2),"\r\n"],
                     inet:setopts(Sock, [{active, once}]),
                     header_loop(S#state{c=C1, method=Method, bin = [Data], timeout=?REQUEST_TIMEOUT});
                 BadUrl -> 
