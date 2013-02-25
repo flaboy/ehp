@@ -39,8 +39,8 @@ header_loop(#state{sock = Sock, callback=Callback} = S)->
             case Uri of
                 {absoluteURI, Schema, Host, _, Path} ->
                     {ok, Path2, C1} = Callback:init(Method, Path),
-                    Data = [be_list(Method), " ",atom_to_list(Schema),"://",Host, Path2, " HTTP/", be_list(V1),".",be_list(V2),"\r\n"],
-                    {ok, C2} = Callback:handle_header('Host', Host, C1),
+                    {ok, C2, Host2} = Callback:handle_header('Host', Host, C1),
+                    Data = [be_list(Method), " ",atom_to_list(Schema),"://",Host2, Path2, " HTTP/", be_list(V1),".",be_list(V2),"\r\n"],
                     S2 = S#state{bin = [Data], method=Method, timeout=?REQUEST_TIMEOUT, c=C2},
                     inet:setopts(Sock, [{active, once}]),
                     header_loop(S2);
@@ -72,9 +72,9 @@ header_loop(#state{sock = Sock, callback=Callback} = S)->
                     end;
                 _-> S
             end,
-            {ok, C2} = Callback:handle_header(Header, Val, S#state.c),
+            {ok, C2, Val2} = Callback:handle_header(Header, Val, S#state.c),
             inet:setopts(Sock, [{active, once}]),
-            header_loop(S2#state{c=C2, bin = [ [be_list(Header), ": ", Val,"\r\n"] | S#state.bin]});
+            header_loop(S2#state{c=C2, bin = [ [be_list(Header), ": ", Val2,"\r\n"] | S#state.bin]});
 
         {http, Sock, http_eoh} ->
             S2 = S#state{bin=["\r\n" | S#state.bin]},
