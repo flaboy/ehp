@@ -77,7 +77,12 @@ header_loop(#state{sock = Sock, callback=Callback} = S)->
             header_loop(S2#state{c=C2, bin = [ [be_list(Header), ": ", Val2,"\r\n"] | S#state.bin]});
 
         {http, Sock, http_eoh} ->
-            S2 = S#state{bin=["\r\n" | S#state.bin]},
+            S2 = case Callback:handle_eof(S#state.c) of
+                {ok, HeaderAddon, C2} ->
+                    S#state{bin=[[HeaderAddon|"\r\n"] | S#state.bin], c=C2};
+                {ok, C2}->
+                    S#state{bin=["\r\n" | S#state.bin], c=C2}
+            end,
             case S#state.handle_post_pamams of
                 true when S#state.method=:='POST' ->
                     handle_data(S2);               
